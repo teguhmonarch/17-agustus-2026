@@ -484,61 +484,165 @@ function simScore(a, b) {
   return Math.round((1 - dist / Math.max(m, n)) * 100) / 100;
 }
 
-// GET /api/duplicates/find?method=ip_address&limit=50
-// (landing-page Round 4 variant) — users grouped by a shared IP address.
+// ---- Round 4: duplicate discovery ----------------------------------------
+// GET /api/duplicates/find?method=ip_address|order_history|activity_pattern|all&limit=50
 // MUST be declared before /api/duplicates/:user_id so "find" is not read as an id.
-let ipDupCache = { at: 0, data: null };
-const IPDUP_TTL = 60 * 1000;
-async function computeIpDuplicates() {
-  const rows = await heavyQuery(`
-    WITH shared AS (
-      SELECT ip_address, count(DISTINCT user_id) AS user_count
-      FROM ws_user_activity
-      WHERE ip_address IS NOT NULL AND ip_address <> ''
-      GROUP BY ip_address
-      HAVING count(DISTINCT user_id) > 1
-      ORDER BY user_count DESC
-      LIMIT 500
-    )
-    SELECT s.ip_address, s.user_count, u.user_id, u.full_name, u.user_email
-    FROM shared s
-    JOIN LATERAL (
-      SELECT DISTINCT user_id FROM ws_user_activity a
-      WHERE a.ip_address = s.ip_address LIMIT 20
-    ) au ON true
-    JOIN ws_user u ON u.user_id = au.user_id
-    ORDER BY s.user_count DESC, s.ip_address
-  `);
-  const groups = new Map();
-  for (const r of rows.rows) {
-    if (!groups.has(r.ip_address)) {
-      groups.set(r.ip_address, {
-        ip_address: r.ip_address, user_count: Number(r.user_count), users: [],
-      });
-    }
-    groups.get(r.ip_address).users.push({
-      user_id: Number(r.user_id), full_name: r.full_name, user_email: r.user_email,
-    });
-  }
-  const data = Array.from(groups.values());
-  ipDupCache = { at: Date.now(), data };
+//
+//   ip_address        users sharing an IP in the activity log        HIGH   (1.00)
+//   order_history     users with an identical purchase (amount+day)  MEDIUM (0.60)
+//   activity_pattern  users active in the same minute + same action  LOW    (0.30)
+//
+// Each strategy is a full-table aggregate (5-13s), so groups are precomputed at
+// boot and refreshed in the background. Requests always answer from cache.
+const DUP_GROUP_LIMIT = 500;
+const DUP_TTL = 10 * 60 * 1000;
+const DUP_TAIL = `
+  SELECT g.shared_attribute, g.user_count, g.user_ids, g.first_activity, g.last_activity,
+         (SELECT array_agg(u.full_name ORDER BY u.user_id)
+            FROM ws_user u WHERE u.user_id = ANY(g.user_ids)) AS user_names
+  FROM grp g ORDER BY g.user_count DESC`;
+
+const DUP_METHODS = {
+  ip_address: {
+    attribute_type: 'ip_address',
+    confidence: 'high',
+    score: 1,
+    reason: 'same IP address in the activity log (same device/location)',
+    sql: `
+      WITH per_user AS (
+        SELECT ip_address, user_id,
+               min(activity_timestamp) AS fa, max(activity_timestamp) AS la
+        FROM ws_user_activity
+        WHERE ip_address IS NOT NULL AND ip_address <> ''
+        GROUP BY ip_address, user_id
+      ), grp AS (
+        SELECT ip_address::text AS shared_attribute, count(*) AS user_count,
+               array_agg(user_id ORDER BY user_id) AS user_ids,
+               min(fa) AS first_activity, max(la) AS last_activity
+        FROM per_user GROUP BY ip_address HAVING count(*) > 1
+        ORDER BY count(*) DESC LIMIT ${DUP_GROUP_LIMIT}
+      )` + DUP_TAIL,
+  },
+  order_history: {
+    attribute_type: 'order_pattern',
+    confidence: 'medium',
+    score: 0.6,
+    reason: 'identical purchase amount on the same day',
+    sql: `
+      WITH per_user AS (
+        SELECT order_amount, order_date::date AS d, user_id,
+               min(order_date) AS fa, max(order_date) AS la
+        FROM ws_orders GROUP BY order_amount, order_date::date, user_id
+      ), grp AS (
+        SELECT (order_amount::text || ' @ ' || d::text) AS shared_attribute,
+               count(*) AS user_count,
+               array_agg(user_id ORDER BY user_id) AS user_ids,
+               min(fa) AS first_activity, max(la) AS last_activity
+        FROM per_user GROUP BY order_amount, d HAVING count(*) > 1
+        ORDER BY count(*) DESC, order_amount DESC LIMIT ${DUP_GROUP_LIMIT}
+      )` + DUP_TAIL,
+  },
+  activity_pattern: {
+    attribute_type: 'activity_window',
+    confidence: 'low',
+    score: 0.3,
+    reason: 'same activity type within the same minute (login pattern)',
+    sql: `
+      WITH per_user AS (
+        SELECT date_trunc('minute', activity_timestamp) AS m, activity_type, user_id,
+               min(activity_timestamp) AS fa, max(activity_timestamp) AS la
+        FROM ws_user_activity GROUP BY 1, 2, 3
+      ), grp AS (
+        SELECT (to_char(m, 'YYYY-MM-DD"T"HH24:MI') || ' ' ||
+                coalesce(activity_type, 'UNKNOWN')) AS shared_attribute,
+               count(*) AS user_count,
+               array_agg(user_id ORDER BY user_id) AS user_ids,
+               min(fa) AS first_activity, max(la) AS last_activity
+        FROM per_user GROUP BY m, activity_type HAVING count(*) > 1
+        ORDER BY count(*) DESC LIMIT ${DUP_GROUP_LIMIT}
+      )` + DUP_TAIL,
+  },
+};
+
+const DUP_ALIASES = {
+  ip: 'ip_address', ip_addr: 'ip_address',
+  orders: 'order_history', order: 'order_history', order_pattern: 'order_history',
+  activity: 'activity_pattern', login: 'activity_pattern',
+};
+
+const dupCache = {};
+const dupInFlight = {};
+
+async function computeDupMethod(name) {
+  const m = DUP_METHODS[name];
+  const r = await heavyQuery(m.sql);
+  const data = r.rows.map((row) => ({
+    shared_attribute: row.shared_attribute,
+    attribute_type: m.attribute_type,
+    user_count: Number(row.user_count),
+    user_ids: (row.user_ids || []).map(Number),
+    user_names: row.user_names || [],
+    first_activity: row.first_activity,
+    last_activity: row.last_activity,
+    confidence: m.confidence,
+    similarity_score: m.score,
+    method: name,
+    reason: m.reason,
+  }));
+  dupCache[name] = { at: Date.now(), data };
   return data;
 }
+
+// Serve the cached groups instantly; only the very first call after boot waits.
+function dupGroups(name) {
+  const c = dupCache[name];
+  if (c && c.data) {
+    if (Date.now() - c.at > DUP_TTL && !dupInFlight[name]) {
+      dupInFlight[name] = computeDupMethod(name)
+        .finally(() => { dupInFlight[name] = null; });
+      dupInFlight[name].catch(() => {});
+    }
+    return Promise.resolve(c.data);
+  }
+  if (!dupInFlight[name]) {
+    dupInFlight[name] = computeDupMethod(name)
+      .finally(() => { dupInFlight[name] = null; });
+  }
+  return dupInFlight[name];
+}
+
+function warmDuplicates() {
+  return Promise.all(Object.keys(DUP_METHODS).map((n) => dupGroups(n).catch(() => {})));
+}
+
 app.get('/api/duplicates/find', async (req, res) => {
   const t0 = process.hrtime.bigint();
-  const method = (req.query.method || 'ip_address').toString();
-  const limit = clampInt(req.query.limit, 50, 1, 500);
+  const raw = (req.query.method || 'ip_address').toString().toLowerCase().trim();
+  const method = DUP_ALIASES[raw] || raw;
+  const limit = clampInt(req.query.limit, 50, 1, DUP_GROUP_LIMIT);
+  const wanted = method === 'all' ? Object.keys(DUP_METHODS) : [method];
+  if (wanted.some((n) => !DUP_METHODS[n])) {
+    return res.status(400).json({
+      error: 'unsupported method',
+      supported: Object.keys(DUP_METHODS).concat(['all']),
+    });
+  }
   try {
-    if (method !== 'ip_address') {
-      return res.status(400).json({ error: 'unsupported method', supported: ['ip_address'] });
-    }
-    let data = ipDupCache.data;
-    if (!data || Date.now() - ipDupCache.at > IPDUP_TTL) data = await computeIpDuplicates();
-    const groups = data.slice(0, limit);
+    const sets = await Promise.all(wanted.map((n) => dupGroups(n)));
+    const all = [].concat.apply([], sets).sort(
+      (a, b) => b.similarity_score - a.similarity_score || b.user_count - a.user_count
+    );
+    const groups = all.slice(0, limit).map((g, i) => Object.assign({ group_id: i + 1 }, g));
+    const users = new Set();
+    for (const g of groups) for (const id of g.user_ids) users.add(id);
     res.json({
       method,
+      duplicate_groups: groups,
+      total_groups_found: all.length,
+      total_duplicate_users: users.size,
+      // legacy keys — the dashboard and the earlier spec read these
       count: groups.length,
-      total_groups: data.length,
+      total_groups: all.length,
       groups,
       took_ms: Number(process.hrtime.bigint() - t0) / 1e6,
     });
@@ -565,7 +669,11 @@ app.get('/api/user-profile/:user_id', async (req, res) => {
         (SELECT coalesce(sum(t.transaction_amount),0) FROM ws_transactions t
            JOIN ws_orders o ON t.order_id = o.order_id WHERE o.user_id = u.user_id) AS transaction_total,
         (SELECT max(a.activity_timestamp) FROM ws_user_activity a WHERE a.user_id = u.user_id) AS last_activity,
-        (SELECT count(*) FROM ws_user_activity a WHERE a.user_id = u.user_id) AS activity_count
+        (SELECT count(*) FROM ws_user_activity a WHERE a.user_id = u.user_id) AS activity_count,
+        (SELECT json_agg(x) FROM (
+           SELECT a.activity_type, a.activity_timestamp, a.ip_address
+           FROM ws_user_activity a WHERE a.user_id = u.user_id
+           ORDER BY a.activity_timestamp DESC LIMIT 5) x) AS recent_activity
        FROM ws_user u WHERE u.user_id = $1::bigint`,
       [id]
     );
@@ -582,6 +690,7 @@ app.get('/api/user-profile/:user_id', async (req, res) => {
       transaction_total: Number(row.transaction_total),
       last_activity: row.last_activity,
       activity_count: Number(row.activity_count),
+      recent_activity: row.recent_activity || [],
     };
     cacheSet(ck, payload);
     res.json({ ...payload, took_ms: Number(process.hrtime.bigint() - t0) / 1e6 });
@@ -652,7 +761,7 @@ app.listen(PORT, '0.0.0.0', () => {
   setInterval(refreshTotal, 60000);
   // warm the quality + IP-duplicate caches so judges get an instant response
   computeQuality().catch(() => {});
-  computeIpDuplicates().catch(() => {});
+  warmDuplicates();
   // periodically refresh WITHOUT clearing: recompute in place and swap when ready
   setInterval(() => {
     if (!qualityInFlight) {

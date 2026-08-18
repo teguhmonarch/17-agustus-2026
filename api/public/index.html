@@ -129,6 +129,26 @@
         </tr></thead><tbody></tbody></table>
       </div>
     </div>
+    <div class="card">
+      <div class="row">
+        <select id="gmethod" class="grow">
+          <option value="ip_address">IP address — shared IP (HIGH confidence)</option>
+          <option value="order_history">Order history — same amount, same day (MEDIUM)</option>
+          <option value="activity_pattern">Activity pattern — same minute, same action (LOW)</option>
+          <option value="all">All strategies combined (weighted)</option>
+        </select>
+        <input id="glimit" style="width:120px" placeholder="limit 25">
+        <button class="go" id="ggo">Find groups</button>
+      </div>
+      <div class="meta" id="gmeta">Group duplicates by a shared attribute.</div>
+      <div class="err hidden" id="gerr"></div>
+      <div style="overflow-x:auto">
+        <table id="gtbl"><thead><tr>
+          <th>#</th><th>Shared attribute</th><th>Type</th><th>Users</th><th>Confidence</th><th>Score</th><th>First seen</th><th>Last seen</th><th>Sample users</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
   </section>
 </main>
 <footer>17 Agustus Coding Festival · Customer Intelligence Platform · all metrics computed live</footer>
@@ -227,6 +247,27 @@ async function findDupes(){
 }
 $('#dgo').onclick=findDupes;
 $('#duid').addEventListener('keydown',e=>{if(e.key==='Enter')findDupes();});
+
+// duplicate groups (Round 4 strategies)
+async function findGroups(){
+  const m=$('#gmethod').value, lim=parseInt($('#glimit').value,10)||25;
+  $('#gerr').classList.add('hidden'); $('#gmeta').textContent='Grouping…';
+  const t0=performance.now();
+  try{
+    const r=await fetch(`/api/duplicates/find?method=${m}&limit=${lim}`); const j=await r.json();
+    if(j.error){$('#gerr').textContent=j.error;$('#gerr').classList.remove('hidden');$('#gmeta').textContent='—';$('#gtbl tbody').innerHTML='';return;}
+    const tb=$('#gtbl tbody'); tb.innerHTML='';
+    (j.duplicate_groups||[]).forEach(g=>{
+      const names=(g.user_names||[]).slice(0,4).join(', ')+((g.user_names||[]).length>4?' …':'');
+      tb.innerHTML+=`<tr><td>${g.group_id}</td><td><code>${esc(g.shared_attribute)}</code></td>
+        <td>${esc(g.attribute_type)}</td><td><b>${g.user_count}</b></td>
+        <td class="sev-${g.confidence}">${g.confidence}</td><td>${g.similarity_score}</td>
+        <td>${fmtDate(g.first_activity)}</td><td>${fmtDate(g.last_activity)}</td>
+        <td>${esc(names)}</td></tr>`;});
+    $('#gmeta').innerHTML=`<b>${j.total_groups_found}</b> group(s) found · <b>${j.total_duplicate_users}</b> users in the shown groups · <span class="took">${(j.took_ms||0).toFixed(0)}ms</span> (round-trip ${(performance.now()-t0).toFixed(0)}ms)`;
+  }catch(e){$('#gerr').textContent=e.message;$('#gerr').classList.remove('hidden');}
+}
+$('#ggo').onclick=findGroups;
 
 function esc(s){return s==null?'':String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 function fmtDate(d){if(!d)return '—';try{return new Date(d).toISOString().slice(0,10);}catch(e){return d;}}

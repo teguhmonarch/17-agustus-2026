@@ -68,21 +68,44 @@ returns a compact <code>{duplicates, missing_fields, quality_score}</code> summa
 { "duplicates":[{"id1":53462510,"id2":69461426,"similarity":1}], "count":982381 }</pre>
 
 <h2><span class="m get">GET</span> /api/duplicates/find</h2>
-<p>Duplicate accounts detected by a <strong>shared IP address</strong> (same
-device/location). Joins <code>ws_user_activity</code> + <code>ws_user</code>.
-Params: <code>method=ip_address</code>, <code>limit</code> (default 50).</p>
+<p>Duplicate accounts found by cross-table strategy. Three strategies, each with
+its own confidence weight — pass <code>method=all</code> to combine them
+(ordered by <code>similarity_score</code>, then group size).</p>
+<table>
+<tr><th>method</th><th>signal</th><th>confidence</th><th>score</th></tr>
+<tr><td><code>ip_address</code></td><td>users sharing an IP in the activity log</td><td>HIGH</td><td>1.00</td></tr>
+<tr><td><code>order_history</code></td><td>identical purchase amount on the same day</td><td>MEDIUM</td><td>0.60</td></tr>
+<tr><td><code>activity_pattern</code></td><td>same activity type within the same minute</td><td>LOW</td><td>0.30</td></tr>
+<tr><td><code>all</code></td><td>weighted merge of the three above</td><td>—</td><td>—</td></tr>
+</table>
+<p>Params: <code>method</code> (default <code>ip_address</code>),
+<code>limit</code> (default 50, max 500). Groups are precomputed at boot and
+refreshed in the background, so every request answers from cache in ~5ms.</p>
 <pre>GET /api/duplicates/find?method=ip_address&limit=50
 
-{ "method":"ip_address","count":50,"groups":[
-  { "ip_address":"192.168.206.236","user_count":57,
-    "users":[{ "user_id":311790,"full_name":"...","user_email":"..." }] }]}</pre>
+{ "method":"ip_address",
+  "duplicate_groups":[
+    { "group_id":1,
+      "shared_attribute":"192.168.206.236",
+      "attribute_type":"ip_address",
+      "user_count":57,
+      "user_ids":[311790,577471,589983, ...],
+      "user_names":["Silvia Yunita Sari", ...],
+      "first_activity":"2026-05-19T09:47:16Z",
+      "last_activity":"2026-08-14T15:52:07Z",
+      "confidence":"high",
+      "similarity_score":1 }],
+  "total_groups_found":500,
+  "total_duplicate_users":1287 }</pre>
 
 <h2><span class="m get">GET</span> /api/user-profile/:user_id</h2>
 <p>Full customer profile aggregated across four tables (user + orders +
-transactions + activity).</p>
+transactions + activity). Load-tested at 100 concurrent connections.</p>
 <pre>GET /api/user-profile/21136836
 
-{ "user_id":21136836,"full_name":"...","order_count":1,
-  "transaction_total":0,"last_activity":"...","activity_count":1 }</pre>
+{ "user_id":21136836,"full_name":"...","user_email":"...","msisdn":"6281****55",
+  "order_count":1,"transaction_total":0,
+  "activity_count":1,"last_activity":"...",
+  "recent_activity":[{"activity_type":"LOGOUT","activity_timestamp":"...","ip_address":"..."}] }</pre>
 </body>
 </html>

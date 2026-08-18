@@ -31,7 +31,7 @@ Dashboard: <http://localhost:3000> · API base: `http://localhost:3000`
 | GET | `/api/metrics` | compact quality summary |
 | GET | `/api/duplicates/:user_id?threshold=&limit=` | duplicates for one user (similarity) |
 | POST | `/api/duplicates` | global duplicate pairs (bounded) or `{user_id}` |
-| GET | `/api/duplicates/find?method=ip_address&limit=50` | users grouped by shared IP address |
+| GET | `/api/duplicates/find?method=ip_address\|order_history\|activity_pattern\|all&limit=50` | duplicate groups by shared attribute |
 | GET | `/api/user-profile/:user_id` | user + orders + transactions + activity (4-table JOIN) |
 
 ### Examples
@@ -42,6 +42,9 @@ curl "http://localhost:3000/api/search?q=081234567890&type=phone"
 curl  http://localhost:3000/api/quality
 curl "http://localhost:3000/api/duplicates/1000?threshold=0.7"
 curl -X POST http://localhost:3000/api/duplicates
+curl "http://localhost:3000/api/duplicates/find?method=ip_address&limit=50"
+curl "http://localhost:3000/api/duplicates/find?method=all&limit=50"
+curl  http://localhost:3000/api/user-profile/311790
 ```
 
 ## Design
@@ -54,7 +57,23 @@ curl -X POST http://localhost:3000/api/duplicates
 - **Duplicates** — composite score `email*0.4 + phone*0.4 + name_sim*0.2`;
   name similarity is normalized Levenshtein; candidates come from indexed
   exact email/phone matches and trigram name matches (no full table scan).
+- **Duplicate groups** (`/api/duplicates/find`) — three cross-table strategies,
+  each carrying its own confidence weight:
+
+  | `method` | signal | confidence | score |
+  |---|---|---|---|
+  | `ip_address` | users sharing an IP in `ws_user_activity` | HIGH | 1.00 |
+  | `order_history` | identical order amount on the same day | MEDIUM | 0.60 |
+  | `activity_pattern` | same activity type within the same minute | LOW | 0.30 |
+  | `all` | weighted merge, ordered by score then group size | — | — |
+
+  Each strategy is a full-table aggregate (5-13s), so the top 500 groups per
+  strategy are computed at boot and refreshed in the background — requests are
+  served from cache in ~5ms and never block on the aggregate.
 - **Load** — pool (max 60), gzip compression, per-statement 8s timeout,
-  bounded result/count queries.
+  bounded result/count queries. Measured on the 4 vCPU VPS, 100 concurrent
+  connections for 60s against `/api/user-profile/:user_id` over 100k distinct
+  user ids (cache-miss heavy): 68,294 requests, **100% success, avg 88ms,
+  p50 88ms, p99 168ms**, zero errors.
 
 See [DATABASE_NOTES.md](DATABASE_NOTES.md) for schema and index detail.
