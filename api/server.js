@@ -195,10 +195,16 @@ app.get('/api/search', async (req, res) => {
 
 let qualityInFlight = null;
 async function computeQuality() {
-  if (qualityCache.data && Date.now() - qualityCache.at < QUALITY_TTL) {
+  if (qualityCache.data) {
+    // Always serve the current data immediately. If it's stale, kick a
+    // non-blocking background refresh — the old value keeps being served until
+    // the new one is ready, so quality/metrics/dup endpoints never time out.
+    if (Date.now() - qualityCache.at > QUALITY_TTL && !qualityInFlight) {
+      qualityInFlight = computeQualityInner().finally(() => { qualityInFlight = null; });
+    }
     return qualityCache.data;
   }
-  // de-duplicate concurrent recomputes (e.g. dashboard + load) onto one run
+  // Cold cache (first request after boot): must wait for the first computation.
   if (qualityInFlight) return qualityInFlight;
   qualityInFlight = computeQualityInner().finally(() => { qualityInFlight = null; });
   return qualityInFlight;
@@ -540,5 +546,11 @@ app.listen(PORT, '0.0.0.0', () => {
   setInterval(refreshTotal, 60000);
   // warm the quality cache in the background so judges get an instant response
   computeQuality().catch(() => {});
-  setInterval(() => { qualityCache = { at: 0, data: null }; computeQuality().catch(() => {}); }, QUALITY_TTL);
+  // periodically refresh WITHOUT clearing: recompute in place and swap when ready
+  setInterval(() => {
+    if (!qualityInFlight) {
+      qualityInFlight = computeQualityInner().finally(() => { qualityInFlight = null; });
+      qualityInFlight.catch(() => {});
+    }
+  }, QUALITY_TTL);
 });
