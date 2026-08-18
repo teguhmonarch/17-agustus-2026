@@ -1,0 +1,14 @@
+{
+  "name": "17-agustus-2026",
+  "version": "1.0.0",
+  "description": "Customer Intelligence Platform - 15M records (17 Agustus Challenge)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "compression": "^1.7.4",
+    "express": "^4.19.2",
+    "pg": "^8.12.0"
+  }
+}

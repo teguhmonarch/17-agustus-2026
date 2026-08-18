@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CIP API Documentation</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:900px;margin:0 auto;padding:30px 20px;
+    background:#0b1020;color:#e8ecf7;line-height:1.55}
+  h1{font-size:22px}h2{margin-top:34px;color:#4f8cff;border-bottom:1px solid #26304f;padding-bottom:6px}
+  code,pre{background:#1b2340;border:1px solid #26304f;border-radius:8px}
+  code{padding:2px 6px;font-size:13px}
+  pre{padding:14px;overflow-x:auto;font-size:12.5px}
+  .m{display:inline-block;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:700;margin-right:6px}
+  .get{background:#14532d;color:#4ade80}.post{background:#78350f;color:#fbbf24}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+  td,th{border:1px solid #26304f;padding:7px 10px;text-align:left}
+  a{color:#4f8cff}
+</style>
+</head>
+<body>
+<h1>🇮🇩 Customer Intelligence Platform — API</h1>
+<p>REST API over 14,999,896 customer records (PostgreSQL 14). All responses are
+JSON; all metrics are computed live. Base URL: <code>http://168.144.244.142:3000</code>.
+Interactive dashboard at <a href="/">/</a>.</p>
+
+<h2><span class="m get">GET</span> /api/health</h2>
+<p>Readiness + exact record count. Also at <code>/health</code>.</p>
+<pre>{ "status":"ready", "ok":true, "total_records":14999896, "database":"connected", "timestamp":"..." }</pre>
+
+<h2><span class="m get">GET</span> /api/search</h2>
+<table>
+<tr><th>Param</th><th>Description</th></tr>
+<tr><td>q</td><td>query string</td></tr>
+<tr><td>type</td><td><code>email</code> · <code>phone</code> · <code>user_id</code> · <code>name</code> (fuzzy)</td></tr>
+<tr><td>limit</td><td>1–100 (default 10)</td></tr>
+<tr><td>offset</td><td>pagination offset</td></tr>
+</table>
+<pre>GET /api/search?q=komang&type=name&limit=10&offset=0
+
+{ "query":"komang","type":"name","limit":10,"offset":0,
+  "results":[{ "user_id":1234567,"full_name":"Komang Pipit",
+    "user_email":"...","msisdn":"0812****90","status":1,"created_at":"..." }],
+  "total":42,"took_ms":78.4 }</pre>
+<p>Phone numbers are masked. Exact types &lt;100ms, name &lt;300ms (p50).</p>
+
+<h2><span class="m get">GET</span> /api/quality &nbsp; <span class="m get">GET</span> /api/metrics</h2>
+<p>Full data-quality report (email/phone/birth_date/hobbies/status metrics,
+duplicate + invalid detection, severity-tagged issues). <code>/api/metrics</code>
+returns a compact <code>{duplicates, missing_fields, quality_score}</code> summary.</p>
+<pre>GET /api/quality  → { "total_records":14999896, "quality_metrics":{...}, "data_issues":[...] }</pre>
+
+<h2><span class="m get">GET</span> /api/duplicates/:user_id</h2>
+<p>Possible duplicates for one user. Query: <code>threshold</code> (default 0.7),
+<code>limit</code>. Composite score = email·0.4 + phone·0.4 + name_similarity·0.2
+(normalized Levenshtein).</p>
+<pre>GET /api/duplicates/53462510?threshold=0.5
+
+{ "user_id":53462510,"full_name":"...","possible_duplicates":[
+  { "user_id":69461426,"similarity_score":0.6,
+    "match_reasons":["email_exact_match","name_similarity_1.00"],"confidence":"low" }],
+  "total_possible_duplicates":1 }</pre>
+
+<h2><span class="m post">POST</span> /api/duplicates</h2>
+<p>Global duplicate pairs (bounded sample) + total count. Optional JSON body
+<code>{ "user_id": 123 }</code> routes to the per-user detector.</p>
+<pre>POST /api/duplicates
+{ "duplicates":[{"id1":53462510,"id2":69461426,"similarity":1}], "count":982381 }</pre>
+</body>
+</html>

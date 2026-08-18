@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Customer Intelligence Platform</title>
+<style>
+  :root{
+    --bg:#0b1020;--panel:#141a2e;--panel2:#1b2340;--line:#26304f;
+    --txt:#e8ecf7;--muted:#94a0c0;--acc:#4f8cff;--acc2:#22c55e;
+    --warn:#f59e0b;--bad:#ef4444;--radius:12px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    background:linear-gradient(180deg,#0b1020,#0d1428);color:var(--txt)}
+  header{padding:20px 24px;border-bottom:1px solid var(--line);
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  header h1{font-size:18px;margin:0;font-weight:700}
+  header .pill{font-size:12px;color:var(--muted);background:var(--panel2);
+    padding:4px 10px;border-radius:999px;border:1px solid var(--line)}
+  #dot{width:9px;height:9px;border-radius:50%;background:var(--warn);display:inline-block}
+  main{max-width:1180px;margin:0 auto;padding:22px 20px 60px}
+  .tabs{display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap}
+  .tab{padding:9px 16px;border-radius:999px;border:1px solid var(--line);
+    background:var(--panel);color:var(--muted);cursor:pointer;font-size:14px}
+  .tab.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:18px;margin-bottom:16px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  input,select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    padding:11px 13px;border-radius:10px;font-size:14px;outline:none}
+  input:focus,select:focus{border-color:var(--acc)}
+  input.grow{flex:1;min-width:220px}
+  button.go{background:var(--acc);color:#fff;border:none;padding:11px 20px;
+    border-radius:10px;font-size:14px;cursor:pointer;font-weight:600}
+  button.go:hover{filter:brightness(1.1)}
+  .meta{font-size:13px;color:var(--muted);margin:10px 2px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.4px}
+  tbody tr:hover{background:var(--panel2)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+  .metric{background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+  .metric h3{margin:0 0 4px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+  .metric .big{font-size:26px;font-weight:700}
+  .bar{height:8px;background:#0c1226;border-radius:999px;overflow:hidden;margin-top:10px}
+  .bar > i{display:block;height:100%;background:var(--acc)}
+  .sub{font-size:12px;color:var(--muted);margin-top:6px}
+  .sev-high{color:var(--bad)}.sev-medium{color:var(--warn)}.sev-low{color:var(--muted)}
+  .took{font-variant-numeric:tabular-nums}
+  .hidden{display:none}
+  .err{color:var(--bad);font-size:13px;margin-top:8px}
+  code{background:var(--panel2);padding:2px 6px;border-radius:6px;font-size:12px}
+  footer{color:var(--muted);font-size:12px;text-align:center;padding:20px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🇮🇩 Customer Intelligence Platform</h1>
+  <span class="pill"><span id="dot"></span> <span id="hstat">connecting…</span></span>
+  <span class="pill">records: <b id="hcount">–</b></span>
+  <span class="pill">15M dataset · PostgreSQL 14</span>
+</header>
+<main>
+  <div class="tabs">
+    <div class="tab active" data-t="search">🔎 Search</div>
+    <div class="tab" data-t="quality">📊 Data Quality</div>
+    <div class="tab" data-t="dupes">👥 Duplicates</div>
+  </div>
+
+  <!-- SEARCH -->
+  <section id="search">
+    <div class="card">
+      <div class="row">
+        <select id="stype">
+          <option value="name">Name (fuzzy)</option>
+          <option value="email">Email (exact)</option>
+          <option value="phone">Phone (exact)</option>
+          <option value="user_id">User ID</option>
+        </select>
+        <input id="sq" class="grow" placeholder="Type a query and press Enter…" autofocus>
+        <button class="go" id="sgo">Search</button>
+      </div>
+      <div class="meta" id="smeta">Ready.</div>
+      <div class="err hidden" id="serr"></div>
+      <div style="overflow-x:auto">
+        <table id="stbl"><thead><tr>
+          <th>User ID</th><th>Full Name</th><th>Email</th><th>Phone</th><th>Status</th><th>Created</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="go" id="sprev" style="background:var(--panel2)">‹ Prev</button>
+        <button class="go" id="snext" style="background:var(--panel2)">Next ›</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- QUALITY -->
+  <section id="quality" class="hidden">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <b>Data Quality Metrics — live over 15M records</b>
+        <button class="go" id="qgo">Recalculate</button>
+      </div>
+      <div class="meta" id="qmeta">Not loaded yet.</div>
+      <div class="grid" id="qgrid"></div>
+    </div>
+    <div class="card">
+      <b>Top Data Issues</b>
+      <div style="overflow-x:auto"><table id="qissues"><thead><tr>
+        <th>Field</th><th>Issue</th><th>Count</th><th>Severity</th><th>Examples</th>
+      </tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <!-- DUPLICATES -->
+  <section id="dupes" class="hidden">
+    <div class="card">
+      <div class="row">
+        <input id="duid" class="grow" placeholder="Enter user_id to find possible duplicates…">
+        <input id="dth" style="width:120px" placeholder="threshold 0.7">
+        <button class="go" id="dgo">Find</button>
+      </div>
+      <div class="meta" id="dmeta">Enter a user_id.</div>
+      <div class="err hidden" id="derr"></div>
+      <div style="overflow-x:auto">
+        <table id="dtbl"><thead><tr>
+          <th>User ID</th><th>Name</th><th>Email</th><th>Phone</th><th>Score</th><th>Confidence</th><th>Reasons</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </section>
+</main>
+<footer>17 Agustus Coding Festival · Customer Intelligence Platform · all metrics computed live</footer>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
+function tabTo(t){
+  $$('.tab').forEach(x=>x.classList.toggle('active',x.dataset.t===t));
+  ['search','quality','dupes'].forEach(s=>$('#'+s).classList.toggle('hidden',s!==t));
+  if(t==='quality' && !window._qloaded){loadQuality();}
+}
+$$('.tab').forEach(x=>x.onclick=()=>tabTo(x.dataset.t));
+
+// health poll
+async function health(){
+  try{
+    const r=await fetch('/api/health'); const j=await r.json();
+    $('#hstat').textContent=j.status; $('#dot').style.background='var(--acc2)';
+    $('#hcount').textContent=Number(j.total_records).toLocaleString();
+  }catch(e){$('#hstat').textContent='offline';$('#dot').style.background='var(--bad)';}
+}
+health(); setInterval(health,10000);
+
+// search
+let offset=0;
+async function doSearch(reset){
+  if(reset) offset=0;
+  const q=$('#sq').value.trim(), type=$('#stype').value;
+  $('#serr').classList.add('hidden');
+  $('#smeta').textContent='Searching…';
+  const t0=performance.now();
+  try{
+    const u=`/api/search?q=${encodeURIComponent(q)}&type=${type}&limit=10&offset=${offset}`;
+    const r=await fetch(u); const j=await r.json();
+    const el=performance.now()-t0;
+    if(j.error){$('#serr').textContent=j.error;$('#serr').classList.remove('hidden');}
+    const tb=$('#stbl tbody'); tb.innerHTML='';
+    (j.results||[]).forEach(u=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${u.user_id}</td><td>${esc(u.full_name)}</td><td>${esc(u.user_email)||'<i style=opacity.4>—</i>'}</td>
+        <td>${u.msisdn||'—'}</td><td>${u.status}</td><td>${fmtDate(u.created_at)}</td>`;
+      tb.appendChild(tr);
+    });
+    $('#smeta').innerHTML=`<b>${j.total}</b> match(es) · server <span class="took">${(j.took_ms||0).toFixed(1)}ms</span> · round-trip <span class="took">${el.toFixed(0)}ms</span> · offset ${offset}`;
+  }catch(e){$('#serr').textContent=e.message;$('#serr').classList.remove('hidden');$('#smeta').textContent='Error.';}
+}
+$('#sgo').onclick=()=>doSearch(true);
+$('#sq').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch(true);});
+$('#snext').onclick=()=>{offset+=10;doSearch(false);};
+$('#sprev').onclick=()=>{offset=Math.max(0,offset-10);doSearch(false);};
+
+// quality
+function metricCard(title,present,total,extra){
+  const pct=total?Math.round(present/total*1000)/10:0;
+  return `<div class="metric"><h3>${title}</h3><div class="big">${present.toLocaleString()}</div>
+    <div class="bar"><i style="width:${pct}%"></i></div><div class="sub">${pct}% present · ${extra||''}</div></div>`;
+}
+async function loadQuality(){
+  window._qloaded=true;
+  $('#qmeta').textContent='Calculating live over 15M rows… (may take a few seconds)';
+  const t0=performance.now();
+  try{
+    const r=await fetch('/api/quality'); const j=await r.json();
+    const m=j.quality_metrics, g=$('#qgrid'); g.innerHTML='';
+    g.innerHTML+=`<div class="metric"><h3>Total Records</h3><div class="big">${j.total_records.toLocaleString()}</div><div class="sub">quality score ${j.quality_score}</div></div>`;
+    g.innerHTML+=metricCard('Email',m.email.present,m.email.total,`${m.email.duplicate_count.toLocaleString()} dup · ${m.email.invalid_format.toLocaleString()} invalid`);
+    g.innerHTML+=metricCard('Phone',m.phone.present,m.phone.total,`${m.phone.duplicate_count.toLocaleString()} dup · ${m.phone.malformed.toLocaleString()} malformed`);
+    g.innerHTML+=metricCard('Birth Date',m.birth_date.present,m.birth_date.total,`${m.birth_date.impossible_dates.toLocaleString()} impossible`);
+    g.innerHTML+=`<div class="metric"><h3>Hobbies NULL</h3><div class="big">${m.hobbies.null_count.toLocaleString()}</div><div class="bar"><i style="width:${m.hobbies.null_percent}%"></i></div><div class="sub">${m.hobbies.null_percent}% null · ${m.hobbies.with_emoji.toLocaleString()} w/ emoji</div></div>`;
+    g.innerHTML+=`<div class="metric"><h3>Status Distribution</h3><div class="sub" style="margin-top:8px;font-size:14px">
+      -1: <b>${m.status.distribution['-1'].toLocaleString()}</b><br>0: <b>${m.status.distribution['0'].toLocaleString()}</b><br>1: <b>${m.status.distribution['1'].toLocaleString()}</b></div></div>`;
+    const tb=$('#qissues tbody'); tb.innerHTML='';
+    (j.data_issues||[]).forEach(i=>{tb.innerHTML+=`<tr><td>${i.field}</td><td>${i.issue_type}</td>
+      <td>${i.count.toLocaleString()}</td><td class="sev-${i.severity}">${i.severity}</td><td><code>${(i.examples||[]).join(', ')||'—'}</code></td></tr>`;});
+    $('#qmeta').innerHTML=`Computed in <span class="took">${(j.took_ms||0).toFixed(0)}ms</span> (round-trip ${(performance.now()-t0).toFixed(0)}ms).`;
+  }catch(e){$('#qmeta').textContent='Error: '+e.message;}
+}
+$('#qgo').onclick=loadQuality;
+
+// duplicates
+async function findDupes(){
+  const id=$('#duid').value.replace(/[^0-9]/g,''); if(!id){$('#dmeta').textContent='Enter a numeric user_id.';return;}
+  const th=parseFloat($('#dth').value)||0.7;
+  $('#derr').classList.add('hidden'); $('#dmeta').textContent='Searching duplicates…';
+  const t0=performance.now();
+  try{
+    const r=await fetch(`/api/duplicates/${id}?threshold=${th}&limit=20`); const j=await r.json();
+    if(j.error){$('#derr').textContent=j.error;$('#derr').classList.remove('hidden');$('#dmeta').textContent='—';$('#dtbl tbody').innerHTML='';return;}
+    const tb=$('#dtbl tbody'); tb.innerHTML='';
+    (j.possible_duplicates||[]).forEach(d=>{tb.innerHTML+=`<tr><td>${d.user_id}</td><td>${esc(d.full_name)}</td>
+      <td>${esc(d.user_email)||'—'}</td><td>${d.user_phone||'—'}</td><td><b>${d.similarity_score}</b></td>
+      <td class="sev-${d.confidence==='high'?'high':d.confidence==='medium'?'medium':'low'}">${d.confidence}</td>
+      <td><code>${(d.match_reasons||[]).join(', ')}</code></td></tr>`;});
+    $('#dmeta').innerHTML=`Base: <b>${esc(j.full_name)}</b> (${j.user_email||'no email'}) · <b>${j.total_possible_duplicates}</b> possible duplicate(s) · <span class="took">${(j.took_ms||0).toFixed(0)}ms</span>`;
+  }catch(e){$('#derr').textContent=e.message;$('#derr').classList.remove('hidden');}
+}
+$('#dgo').onclick=findDupes;
+$('#duid').addEventListener('keydown',e=>{if(e.key==='Enter')findDupes();});
+
+function esc(s){return s==null?'':String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function fmtDate(d){if(!d)return '—';try{return new Date(d).toISOString().slice(0,10);}catch(e){return d;}}
+</script>
+</body>
+</html>
