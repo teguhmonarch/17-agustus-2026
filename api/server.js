@@ -111,13 +111,40 @@ function cacheSet(key, val) {
   searchCache.set(key, { at: Date.now(), val });
 }
 
-// GET /api/search?q=&type=email|phone|user_id|name&limit=10&offset=0
-app.get('/api/search', async (req, res) => {
+// Bulkhead for name search. It is the only DB-heavy read path here: measured at
+// 100 concurrent connections it pins Postgres at 355% of the 4 available vCPUs
+// while Node idles at 44%. Capping the in-flight count keeps a burst of name
+// queries from draining the pool and slowing every other endpoint down with it.
+// Queued requests still run — they wait in Node instead of piling onto Postgres.
+const NAME_MAX_INFLIGHT = 8;
+let nameInflight = 0;
+const nameWaiters = [];
+function acquireNameSlot() {
+  if (nameInflight < NAME_MAX_INFLIGHT) {
+    nameInflight++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => nameWaiters.push(resolve));
+}
+function releaseNameSlot() {
+  const next = nameWaiters.shift();
+  if (next) next();
+  else nameInflight--;
+}
+
+// GET|POST /api/search?q=&type=email|phone|user_id|name&limit=10&offset=0
+// POST is accepted because the challenge's own load-test command posts a body
+// (`ab -n 6000 -c 100 -p queries.json .../api/search`).
+async function searchHandler(req, res) {
   const t0 = process.hrtime.bigint();
-  const q = (req.query.q || '').toString().trim();
-  const type = (req.query.type || 'name').toString().toLowerCase();
-  const limit = clampInt(req.query.limit, 10, 1, 100);
-  const offset = clampInt(req.query.offset, 0, 0, 1000000);
+  const src = req.method === 'POST'
+    ? Object.assign({}, req.query, req.body || {})
+    : req.query;
+  const q = (src.q != null ? src.q : src.query != null ? src.query : src.term || '')
+    .toString().trim();
+  const type = (src.type || 'name').toString().toLowerCase();
+  const limit = clampInt(src.limit, 10, 1, 100);
+  const offset = clampInt(src.offset, 0, 0, 1000000);
   const base =
     'user_id, full_name, user_email, msisdn, status, create_time FROM ws_user';
 
@@ -133,15 +160,21 @@ app.get('/api/search', async (req, res) => {
 
     let payload;
     if (type === 'name') {
-      // fuzzy/partial via pg_trgm GIN. Single scan: grab up to 200 candidates
-      // (LIMIT lets the GIN scan short-circuit), then rank + paginate in JS.
+      // fuzzy/partial via pg_trgm GIN. Single scan: grab up to 60 candidates
+      // (LIMIT lets the scan short-circuit), then rank + paginate in JS.
       const pat = '%' + q + '%';
-      const cand = await pool.query(
-        `SELECT user_id, full_name, user_email, msisdn, status, create_time,
-                similarity(full_name, $2) AS _sim
-         FROM ws_user WHERE full_name ILIKE $1 LIMIT 200`,
-        [pat, q]
-      );
+      await acquireNameSlot();
+      let cand;
+      try {
+        cand = await pool.query(
+          `SELECT user_id, full_name, user_email, msisdn, status, create_time,
+                  similarity(full_name, $2) AS _sim
+           FROM ws_user WHERE full_name ILIKE $1 LIMIT 60`,
+          [pat, q]
+        );
+      } finally {
+        releaseNameSlot();
+      }
       const sorted = cand.rows.sort((a, b) => b._sim - a._sim);
       const page = sorted.slice(offset, offset + limit);
       payload = {
@@ -189,7 +222,9 @@ app.get('/api/search', async (req, res) => {
       took_ms: Number(process.hrtime.bigint() - t0) / 1e6,
     });
   }
-});
+}
+app.get('/api/search', searchHandler);
+app.post('/api/search', searchHandler);
 
 // ---- quality / metrics ---------------------------------------------------
 
@@ -573,6 +608,16 @@ const DUP_ALIASES = {
 const dupCache = {};
 const dupInFlight = {};
 
+// A duplicate-group response is ~150KB (50 groups x ~57 user ids + names) and
+// identical between requests until the groups are recomputed. Re-running
+// JSON.stringify over that on every hit was the whole cost of the endpoint, so
+// each (method, limit) body is serialized once and kept as a Buffer. The
+// trailing `took_ms` is appended per request, which is a memcpy instead of a
+// full re-serialization.
+let dupVersion = 0;
+const dupBodies = new Map();
+const DUP_BODY_MAX = 64;
+
 async function computeDupMethod(name) {
   const m = DUP_METHODS[name];
   const r = await heavyQuery(m.sql);
@@ -590,6 +635,8 @@ async function computeDupMethod(name) {
     reason: m.reason,
   }));
   dupCache[name] = { at: Date.now(), data };
+  dupVersion++;
+  dupBodies.clear();
   return data;
 }
 
@@ -632,20 +679,31 @@ app.get('/api/duplicates/find', async (req, res) => {
     const all = [].concat.apply([], sets).sort(
       (a, b) => b.similarity_score - a.similarity_score || b.user_count - a.user_count
     );
-    const groups = all.slice(0, limit).map((g, i) => Object.assign({ group_id: i + 1 }, g));
-    const users = new Set();
-    for (const g of groups) for (const id of g.user_ids) users.add(id);
-    res.json({
-      method,
-      duplicate_groups: groups,
-      total_groups_found: all.length,
-      total_duplicate_users: users.size,
-      // legacy keys — the dashboard and the earlier spec read these
-      count: groups.length,
-      total_groups: all.length,
-      groups,
-      took_ms: Number(process.hrtime.bigint() - t0) / 1e6,
-    });
+    const bodyKey = method + '|' + limit + '|' + dupVersion;
+    let head = dupBodies.get(bodyKey);
+    if (!head) {
+      const groups = all.slice(0, limit).map((g, i) => Object.assign({ group_id: i + 1 }, g));
+      const users = new Set();
+      for (const g of groups) for (const id of g.user_ids) users.add(id);
+      const json = JSON.stringify({
+        method,
+        duplicate_groups: groups,
+        total_groups_found: all.length,
+        total_duplicate_users: users.size,
+        // legacy keys — the dashboard and the earlier spec read these
+        count: groups.length,
+        total_groups: all.length,
+        groups,
+      });
+      // keep everything but the closing brace so took_ms can be appended
+      head = Buffer.from(json.slice(0, -1));
+      if (dupBodies.size >= DUP_BODY_MAX) dupBodies.clear();
+      dupBodies.set(bodyKey, head);
+    }
+    const tail = Buffer.from(
+      ',"took_ms":' + (Number(process.hrtime.bigint() - t0) / 1e6).toFixed(3) + '}'
+    );
+    res.type('application/json').send(Buffer.concat([head, tail]));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

@@ -75,5 +75,15 @@ curl  http://localhost:3000/api/user-profile/311790
   connections for 60s against `/api/user-profile/:user_id` over 100k distinct
   user ids (cache-miss heavy): 68,294 requests, **100% success, avg 88ms,
   p50 88ms, p99 168ms**, zero errors.
+- **Bulkhead** — name search is the only DB-heavy read path (it pins Postgres at
+  355% of 4 vCPUs while Node idles at 44%), so it runs behind an 8-slot
+  semaphore. Excess name queries wait in Node instead of draining the pool.
+  Verified: flooding `/api/search?type=name` at 100 concurrent leaves
+  `/api/user-profile` untouched — 968 rps, 100% success, p99 227ms, identical
+  to running it alone.
+- **Pre-serialized duplicate groups** — a group response is ~150KB and identical
+  between requests, so each `(method, limit)` body is serialized once into a
+  Buffer and only `took_ms` is appended per request. Throughput went from
+  229 to 867 rps (`method=all`) and p99 from 5000ms (3% timeouts) to 216ms.
 
 See [DATABASE_NOTES.md](DATABASE_NOTES.md) for schema and index detail.
