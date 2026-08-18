@@ -8,16 +8,31 @@ All metrics are computed **live** against PostgreSQL — nothing is pre-computed
 
 ## Quick start
 
+**Already running — nothing to build:** <http://168.144.244.142:3000>
+(dashboard) · <http://168.144.244.142:3000/docs.html> (API reference) ·
+<http://168.144.244.142:3000/api/health> (readiness + record count).
+
+To run it yourself you need the organizers' dump,
+`challenge_db_anonymized_v2.sql.gz` (1.9GB, provided on the challenge VPS at
+`/app/data/`). It is not in this repo. Point `DUMP` at wherever you put it:
+
 ```bash
+DUMP=/app/data/challenge_db_anonymized_v2.sql.gz   # organizers' dump
+
 docker compose up -d db          # start PostgreSQL 14 (tuned)
-# restore the provided dump into the cip database:
-gunzip -c /app/data/challenge_db_anonymized_v2.sql.gz \
+# restore the dump into the cip database (~25 min for 15M rows):
+gunzip -c "$DUMP" \
   | docker exec -i cip-pg psql -U postgres -d cip -v ON_ERROR_STOP=0
 # build indexes (pg_trgm + btree):
 docker exec -i cip-pg psql -U postgres -d cip < db/indexes.sql
 docker compose up -d api         # start the API + dashboard
 curl http://localhost:3000/api/health
 ```
+
+The database name is `cip` and the Postgres container is `cip-pg`, so
+`docker exec -it cip-pg psql -U postgres -d cip` opens a shell against the
+loaded data. Index build (`db/indexes.sql`) takes a few minutes — the API
+answers before it finishes, just slower.
 
 Dashboard: <http://localhost:3000> · API base: `http://localhost:3000`
 
