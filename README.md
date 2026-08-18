@@ -29,8 +29,10 @@ Dashboard: <http://localhost:3000> · API base: `http://localhost:3000`
 | GET | `/api/search?q=&type=&limit=&offset=` | search: `email`/`phone`/`user_id`/`name` |
 | GET | `/api/quality` | full data-quality report (live) |
 | GET | `/api/metrics` | compact quality summary |
-| GET | `/api/duplicates/:user_id?threshold=&limit=` | duplicates for one user |
+| GET | `/api/duplicates/:user_id?threshold=&limit=` | duplicates for one user (similarity) |
 | POST | `/api/duplicates` | global duplicate pairs (bounded) or `{user_id}` |
+| GET | `/api/duplicates/find?method=ip_address&limit=50` | users grouped by shared IP address |
+| GET | `/api/user-profile/:user_id` | user + orders + transactions + activity (4-table JOIN) |
 
 ### Examples
 

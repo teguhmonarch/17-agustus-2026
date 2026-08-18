@@ -66,5 +66,23 @@ returns a compact <code>{duplicates, missing_fields, quality_score}</code> summa
 <code>{ "user_id": 123 }</code> routes to the per-user detector.</p>
 <pre>POST /api/duplicates
 { "duplicates":[{"id1":53462510,"id2":69461426,"similarity":1}], "count":982381 }</pre>
+
+<h2><span class="m get">GET</span> /api/duplicates/find</h2>
+<p>Duplicate accounts detected by a <strong>shared IP address</strong> (same
+device/location). Joins <code>ws_user_activity</code> + <code>ws_user</code>.
+Params: <code>method=ip_address</code>, <code>limit</code> (default 50).</p>
+<pre>GET /api/duplicates/find?method=ip_address&limit=50
+
+{ "method":"ip_address","count":50,"groups":[
+  { "ip_address":"192.168.206.236","user_count":57,
+    "users":[{ "user_id":311790,"full_name":"...","user_email":"..." }] }]}</pre>
+
+<h2><span class="m get">GET</span> /api/user-profile/:user_id</h2>
+<p>Full customer profile aggregated across four tables (user + orders +
+transactions + activity).</p>
+<pre>GET /api/user-profile/21136836
+
+{ "user_id":21136836,"full_name":"...","order_count":1,
+  "transaction_total":0,"last_activity":"...","activity_count":1 }</pre>
 </body>
 </html>
