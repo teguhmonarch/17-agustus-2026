@@ -15,6 +15,7 @@ CREATE INDEX IF NOT EXISTS idx_user_fullname_trgm ON ws_user USING gin (full_nam
 CREATE INDEX IF NOT EXISTS idx_orders_user   ON ws_orders (user_id);
 CREATE INDEX IF NOT EXISTS idx_tx_order       ON ws_transactions (order_id);
 CREATE INDEX IF NOT EXISTS idx_activity_user  ON ws_user_activity (user_id);
+CREATE INDEX IF NOT EXISTS idx_activity_ip    ON ws_user_activity (ip_address);
 
 ANALYZE ws_user;
 ANALYZE ws_orders;
