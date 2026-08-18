@@ -30,8 +30,10 @@ services:
       - "max_parallel_workers=4"
       - "-c"
       - "max_parallel_workers_per_gather=2"
-    ports:
-      - "5432:5432"
+    # Postgres is reachable only on the compose network. Publishing 5432 with
+    # the default postgres/postgres credentials got this database wiped by an
+    # automated ransomware scanner mid-event; the API talks to db:5432 over the
+    # internal network and never needed the host port.
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
